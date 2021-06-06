@@ -1,0 +1,287 @@
+---
+title: "PM2.5 Emissions Data Analysis"
+author: "Bradley Patyk"
+date: "6/5/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Intro
+
+```{r libraries}
+library(png)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(stringi)
+```
+
+```{r filepaths}
+URL <- "https://d396qusza40orc.cloudfront.net/exdata%2Fdata%2FNEI_data.zip"
+rootpath <- file.path(".","Plots")
+filename <- "exdata_data_NEI_data.zip"
+  
+if(!dir.exists(rootpath)) dir.create(rootpath)
+```
+
+
+
+```{r}
+filepath <- file.path(rootpath,"summarySCC_PM25.rds")
+  
+if(!file.exists(filepath))
+{
+  filepath <- file.path(rootpath, filename)
+  download.file(URL, filepath, 'curl')
+  unzip(filepath, exdir = rootpath)
+  unlink(filepath)
+}
+```
+
+
+
+```{r}
+filepath <- file.path(rootpath, "summarySCC_PM25.rds")
+summary <- readRDS(filepath)
+total <- tapply(summary$Emissions, summary$year, sum) / 1000000
+```
+
+```{r}
+greyscale <- 255 - total / max(total) * 255
+greyscale <- as.character(as.hexmode(as.integer(greyscale)))
+greyscale <- paste0("#", greyscale, greyscale, greyscale)
+```
+
+```{r}
+filepath <- file.path(rootpath, "plot1.png")
+if(exists(filepath)) unlink(filepath)
+png(filepath)
+
+barplot(total, col = greyscale,
+        main = "Total PM2.5 emissions from all sources",
+        ylab = "Millions of tons")
+
+dev.off()
+img <- readPNG(filepath)
+grid::grid.raster(img)
+```
+
+```{r}
+baltimore <- subset(summary, fips == "24510")
+baltimore_total <- tapply(baltimore$Emissions, baltimore$year, sum) / 1000
+```
+
+```{r}
+bluescale <- 255 - baltimore_total / max(baltimore_total) * 255
+bluescale2 <- 255 - baltimore_total / max(baltimore_total) * 192
+bluescale <- as.character(as.hexmode(as.integer(bluescale)))
+bluescale2 <- as.character(as.hexmode(as.integer(bluescale2)))
+bluescale <- paste0("#", bluescale, bluescale2, "ff")
+```
+
+
+```{r}
+filepath <- file.path(rootpath, "plot2.png")
+if(exists(filepath)) unlink(filepath)
+png(filepath)
+
+barplot(baltimore_total, col = bluescale,
+        main = "Total PM2.5 emissions from Baltimore City",
+        ylab = "Thousands of tons")
+
+dev.off()
+img <- readPNG(filepath)
+grid::grid.raster(img)
+```
+
+```{r}
+baltimore$type_by_year <- paste(baltimore$type, baltimore$year)
+baltimore_total_type <- tapply(baltimore$Emissions, baltimore$type_by_year, sum)
+baltimore_total_type <- data.frame("type_year" = names(baltimore_total_type),
+                                   "emissions" = baltimore_total_type,
+                                   row.names = NULL)
+baltimore_total_type <- baltimore_total_type %>% separate(type_year,
+                                                          c("type", "year"),
+                                                          sep = " ",
+                                                          remove = T)
+baltimore_total_type$year <- as.numeric(baltimore_total_type$year)
+type_total_top <- subset(baltimore_total_type, type == "POINT" | type == "NONPOINT")
+type_total_bottom <- subset(baltimore_total_type, type == "ON-ROAD" | type == "NON-ROAD")
+type_order_top <- c("POINT","NONPOINT")
+type_order_bottom <- c("ON-ROAD","NON-ROAD")
+type_total_top <- type_total_top %>% mutate(type = factor(type, levels = type_order_top))
+type_total_bottom <- type_total_bottom %>% mutate(type = factor(type, levels = type_order_bottom))
+```
+
+```{r}
+filepath <- file.path(rootpath, "plot3.png")
+if(exists(filepath)) unlink(filepath)
+  
+tp <- ggplot(type_total_top, aes(year, emissions)) + 
+      geom_point(shape = 19, col = "red") + 
+      geom_line(stat = "smooth", 
+                method = "lm", 
+                formula = y ~ x, 
+                se = F, 
+                linetype = "dashed",
+                col = "red",
+                alpha = 0.5) +
+      facet_wrap(~type) + 
+      theme(legend.position = "none", 
+            axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            plot.title = element_text(hjust = 0.5)) +
+      labs(title = "Baltimore City PM2.5 total emissions by type", y = "Emissions in tons")
+  
+bp <- ggplot(type_total_bottom, aes(year, emissions)) + 
+      geom_point(shape = 19, col = "blue") + 
+      geom_line(stat = "smooth", 
+                method = "lm", 
+                formula = y ~ x, 
+                se = F, 
+                linetype = "dashed",
+                col = "blue",
+                alpha = 0.5) +
+      facet_wrap(~type) + 
+      theme(legend.position = "none", 
+            axis.title.x = element_blank()) +
+      labs(y = "Emissions in tons")
+  
+ggarrange(tp, bp, nrow = 2)
+ggsave(filepath)
+  
+img <- readPNG(filepath)
+grid::grid.raster(img)
+```
+
+```{r}
+filepath <- file.path(rootpath, "Source_Classification_Code.rds")
+codes<- readRDS(filepath)
+coal_codes <- codes[grep("fuel comb.+coal", 
+                          codes$EI.Sector, 
+                          ignore.case = T),][,c("SCC","EI.Sector")]
+coal_codes$SCC <- as.character(coal_codes$SCC)
+coal_codes$EI.Sector <- as.character(coal_codes$EI.Sector)
+coal_summary <- subset(summary, SCC %in% coal_codes$SCC)
+coal_summary <- merge(coal_summary, coal_codes, by = "SCC")
+coal_summary$year_sector <- paste(coal_summary$year, coal_summary$EI.Sector, sep = "_")
+coal_summary <- tapply(coal_summary$Emissions, coal_summary$year_sector, sum)
+coal_summary <- data.frame("year_sector" = names(coal_summary),
+                           "emissions" = coal_summary / 1000, 
+                           row.names = NULL)
+  
+coal_summary <- coal_summary %>% separate(year_sector, c("year", "sector"), sep = "_", remove = T)
+levels <- tapply(coal_summary$emissions, coal_summary$sector, max)
+levels <- data.frame("sectors" = names(levels), "max" = levels, row.names = NULL)
+levels <- levels[order(-levels$max),]
+levels$sectors <- as.factor(gsub("Fuel Comb - | - Coal","", levels$sectors))
+coal_summary$year <- as.numeric(coal_summary$year)
+coal_summary$sector <- as.factor(gsub("Fuel Comb - | - Coal","", coal_summary$sector))
+coal_summary$sector <- factor(coal_summary$sector, levels = levels$sectors)
+```
+
+```{r}
+filepath <- file.path(rootpath, "plot4.png")
+if(exists(filepath)) unlink(filepath)
+
+ggplot(coal_summary, aes(year, emissions, col = sector)) +
+geom_point() +
+geom_line(stat = "smooth", method = "lm", formula = y ~ x, se = F, linetype = "dashed", alpha = 0.5) +
+geom_path(alpha = 0.5) +
+facet_wrap(~sector, nrow = 3, scales = "free") +
+theme(legend.position = "none",
+      axis.title.x = element_blank(),
+      plot.title = element_text(hjust = 0.5)) +
+labs(title = "Emissions from Coal Combustion", y = "Thousands of tons")
+
+ggsave(filepath)
+img <- readPNG(filepath)
+grid::grid.raster(img)
+```
+
+```{r}
+auto_codes <- codes[grep("mobile - on-road", 
+                          codes$EI.Sector, 
+                          ignore.case = T),][,c("SCC","EI.Sector")]
+auto_codes$SCC <- as.character(auto_codes$SCC)
+auto_codes$EI.Sector <- as.character(auto_codes$EI.Sector)
+auto_summary <- subset(baltimore, SCC %in% auto_codes$SCC)
+auto_summary <- merge(auto_summary, auto_codes, by = "SCC")
+
+auto_summary$year_sector <- paste(auto_summary$year, auto_summary$EI.Sector, sep = "_")
+auto_summary <- tapply(auto_summary$Emissions, auto_summary$year_sector, sum)
+auto_summary <- data.frame("year_sector" = names(auto_summary),
+                           "emissions" = auto_summary, 
+                           row.names = NULL)
+  
+auto_summary <- auto_summary %>% separate(year_sector, c("year", "sector"), sep = "_", remove = T)
+auto_summary$year <- as.numeric(auto_summary$year)
+auto_summary$sector <- as.factor(gsub("Mobile - On-Road ","", auto_summary$sector))
+```
+
+```{r}
+filepath <- file.path(rootpath, "plot5.png")
+if(exists(filepath)) unlink(filepath)
+
+ggplot(auto_summary, aes(year, emissions, col = sector)) +
+geom_point() +
+geom_line(stat = "smooth", method = "lm", formula = y ~ x, se = F, linetype = "dashed", alpha = 0.5) +
+geom_path() +
+theme(legend.position = c(0.8,0.8),
+      legend.title = element_blank(),
+      axis.title.x = element_blank(),
+      plot.title = element_text(hjust = 0.5)) +
+labs(title = "Emissions from Autos in Baltimore", y = "Emissions in tons")
+
+ggsave(filepath)
+img <- readPNG(filepath)
+grid::grid.raster(img)
+```
+
+
+```{r}
+baltimore_LA <- subset(summary, fips == "24510" | fips == "06037")
+baltimore_LA$fips <- as.factor(stri_replace_all_regex(baltimore_LA$fips, 
+                                                      c("24510", "06037"), 
+                                                      c("Baltimore", "Los Angeles"), 
+                                                      vectorize = F))
+```
+
+```{r}
+auto_summary <- subset(baltimore_LA, SCC %in% auto_codes$SCC)
+auto_summary <- merge(auto_summary, auto_codes, by = "SCC")
+
+auto_summary$year_city <- paste(auto_summary$year, auto_summary$fips, sep = "_")
+auto_summary <- tapply(auto_summary$Emissions, auto_summary$year_city, sum)
+auto_summary <- data.frame("year_city" = names(auto_summary),
+                           "emissions" = auto_summary, 
+                           row.names = NULL)
+```
+
+
+```{r}
+auto_summary <- auto_summary %>% separate(year_city, c("year", "city"), sep = "_", remove = T)
+auto_summary$year <- as.factor(auto_summary$year)
+auto_summary$city <- as.factor(auto_summary$city)
+```
+
+```{r}
+filepath <- file.path(rootpath, "plot6.png")
+if(exists(filepath)) unlink(filepath)
+
+
+ggplot(auto_summary, aes(year, emissions, fill = city)) +
+geom_bar(stat = "identity", position = "dodge") +
+theme(legend.position = c(0.9, 1),
+      legend.title = element_blank(),
+      axis.title.x = element_blank(),
+      plot.title = element_text(hjust = 0.5)) +
+labs(title = "Automobile PM2.5 Emissions", y = "Emissions in tons")
+
+ggsave(filepath)
+img <- readPNG(filepath)
+grid::grid.raster(img)
+```
+
